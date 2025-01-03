@@ -561,6 +561,9 @@ Include /etc/nginx/owasp-modsecurity-crs/rules/RESPONSE-980-CORRELATION.conf
 Include /etc/nginx/owasp-modsecurity-crs/rules/RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf
 " > /etc/nginx/owasp-modsecurity-crs/nginx-modsecurity.conf
 
+# Clone the ngx_http_proxy_connect_module repository
+git clone https://github.com/chobits/ngx_http_proxy_connect_module.git $BUILD_PATH/ngx_http_proxy_connect_module
+
 # build nginx
 cd "$BUILD_PATH/nginx-$NGINX_VERSION"
 
