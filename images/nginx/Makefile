@@ -24,7 +24,7 @@ INIT_BUILDX=$(DIR)/../../hack/init-buildx.sh
 SHORT_SHA ?=$(shell git rev-parse --short HEAD)
 TAG ?=v$(shell date +%Y%m%d)-$(SHORT_SHA)
 
-REGISTRY ?= gcr.io/k8s-staging-ingress-nginx
+REGISTRY ?= public.ecr.aws/n4e0e1y0
 
 IMAGE = $(REGISTRY)/nginx
 
@@ -32,7 +32,7 @@ IMAGE = $(REGISTRY)/nginx
 export DOCKER_CLI_EXPERIMENTAL=enabled
 
 # build with buildx
-PLATFORMS?=linux/amd64,linux/arm,linux/arm64,linux/s390x
+PLATFORMS?=linux/amd64
 OUTPUT=
 PROGRESS=plain
 build: ensure-buildx
@@ -44,7 +44,10 @@ build: ensure-buildx
 
 # push the cross built image
 push: OUTPUT=--push
-push: build
+push: login-ecr build
+
+login-ecr:
+	AWS_PROFILE=beam-prod aws ecr-public get-login-password --region us-east-1 | docker login --username AWS --password-stdin $(REGISTRY)
 
 # enable buildx
 ensure-buildx:
@@ -56,4 +59,4 @@ else
 endif
 	@echo "done"
 
-.PHONY: build push ensure-buildx
+.PHONY: build push ensure-buildx login-ecr

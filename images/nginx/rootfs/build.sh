@@ -574,6 +574,9 @@ for PATCH in `ls /patches`;do
   fi
 done
 
+# Apply patch for ngx_http_proxy_connect_module
+patch -p1 < $BUILD_PATH/ngx_http_proxy_connect_module/patch/proxy_connect_rewrite_102101.patch
+
 WITH_FLAGS="--with-debug \
   --with-compat \
   --with-pcre-jit \
@@ -629,7 +632,8 @@ WITH_MODULES=" \
   --add-dynamic-module=$BUILD_PATH/nginx-opentracing-$NGINX_OPENTRACING_VERSION/opentracing \
   --add-dynamic-module=$BUILD_PATH/ModSecurity-nginx-$MODSECURITY_VERSION \
   --add-dynamic-module=$BUILD_PATH/ngx_http_geoip2_module-${GEOIP2_VERSION} \
-  --add-dynamic-module=$BUILD_PATH/ngx_brotli"
+  --add-dynamic-module=$BUILD_PATH/ngx_brotli \
+  --add-dynamic-module=$BUILD_PATH/ngx_http_proxy_connect_module"
 
 ./configure \
   --prefix=/usr/local/nginx \
@@ -656,6 +660,7 @@ WITH_MODULES=" \
   --group=www-data \
   ${WITH_MODULES}
 
+# Compile and install
 make
 make modules
 make install
