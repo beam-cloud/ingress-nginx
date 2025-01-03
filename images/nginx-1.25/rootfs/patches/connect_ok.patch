@@ -1,9 +1,150 @@
 diff --git a/connect_ok.patch b/connect_ok.patch
 new file mode 100644
-index 00000000..03756bfd
+index 00000000..78885863
 --- /dev/null
 +++ b/connect_ok.patch
-@@ -0,0 +1,135 @@
+@@ -0,0 +1,287 @@
++diff --git a/connect_ok.patch b/connect_ok.patch
++new file mode 100644
++index 00000000..03756bfd
++--- /dev/null
+++++ b/connect_ok.patch
++@@ -0,0 +1,135 @@
+++diff --git a/src/http/ngx_http_request.c b/src/http/ngx_http_request.c
+++index bd2be5ea..d06bc47f 100644
+++--- a/src/http/ngx_http_request.c
++++++ b/src/http/ngx_http_request.c
+++@@ -2018,13 +2018,6 @@ ngx_http_process_request_header(ngx_http_request_t *r)
+++         }
+++     }
+++ 
+++-    if (r->method == NGX_HTTP_CONNECT) {
+++-        ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+++-                      "client sent CONNECT method");
+++-        ngx_http_finalize_request(r, NGX_HTTP_NOT_ALLOWED);
+++-        return NGX_ERROR;
+++-    }
+++-
+++     if (r->method == NGX_HTTP_TRACE) {
+++         ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+++                       "client sent TRACE method");
+++diff --git a/src/http/ngx_http_upstream.c b/src/http/ngx_http_upstream.c
+++index f5db6533..65445e6a 100644
+++--- a/src/http/ngx_http_upstream.c
++++++ b/src/http/ngx_http_upstream.c
+++@@ -1,4 +1,3 @@
+++-
+++ /*
+++  * Copyright (C) Igor Sysoev
+++  * Copyright (C) Nginx, Inc.
+++@@ -37,6 +36,8 @@ static void ngx_http_upstream_check_broken_connection(ngx_http_request_t *r,
+++     ngx_event_t *ev);
+++ static void ngx_http_upstream_connect(ngx_http_request_t *r,
+++     ngx_http_upstream_t *u);
++++static void ngx_http_upstream_connect_raw(ngx_http_request_t *r, ngx_http_upstream_t *u);
++++static void ngx_http_upstream_connect_handler(ngx_event_t *ev);
+++ static ngx_int_t ngx_http_upstream_reinit(ngx_http_request_t *r,
+++     ngx_http_upstream_t *u);
+++ static void ngx_http_upstream_send_request(ngx_http_request_t *r,
+++@@ -1676,6 +1677,57 @@ ngx_http_upstream_connect(ngx_http_request_t *r, ngx_http_upstream_t *u)
+++ #endif
+++ 
+++     ngx_http_upstream_send_request(r, u, 1);
++++
++++    if (r->method == NGX_HTTP_CONNECT) {
++++        // Transition to stream handling
++++        ngx_http_upstream_connect_raw(r, u);
++++        return;
++++    }
++++}
++++
++++static void
++++ngx_http_upstream_connect_raw(ngx_http_request_t *r, ngx_http_upstream_t *u)
++++{
++++    ngx_int_t                  rc;
++++    ngx_connection_t          *c;
++++    ngx_http_core_loc_conf_t  *clcf;
++++
++++    r->connection->log->action = "connecting to upstream";
++++
++++    // Initialize upstream state for raw connection
++++    if (u->state && u->state->response_time == (ngx_msec_t) -1) {
++++        u->state->response_time = ngx_current_msec - u->start_time;
++++    }
++++
++++    u->state = ngx_array_push(r->upstream_states);
++++    if (u->state == NULL) {
++++        ngx_http_upstream_finalize_request(r, u, NGX_HTTP_INTERNAL_SERVER_ERROR);
++++        return;
++++    }
++++
++++    ngx_memzero(u->state, sizeof(ngx_http_upstream_state_t));
++++
++++    u->start_time = ngx_current_msec;
++++
++++    u->state->response_time = (ngx_msec_t) -1;
++++    u->state->connect_time = (ngx_msec_t) -1;
++++    u->state->header_time = (ngx_msec_t) -1;
++++
++++    rc = ngx_event_connect_peer(&u->peer);
++++
++++    if (rc == NGX_ERROR || rc == NGX_DECLINED) {
++++        ngx_http_upstream_finalize_request(r, u, NGX_HTTP_BAD_GATEWAY);
++++        return;
++++    }
++++
++++    if (rc == NGX_AGAIN) {
++++        ngx_add_timer(c->write, clcf->connect_timeout);
++++        c->write->handler = ngx_http_upstream_connect_handler;
++++        return;
++++    }
++++
++++    // Directly proxy the TCP stream
++++    ngx_http_upstream_send_response(r, u);
+++ }
+++ 
+++ 
+++@@ -4107,7 +4159,6 @@ ngx_http_upstream_process_upstream(ngx_http_request_t *r,
+++ 
+++             return;
+++         }
+++-
+++         if (ngx_event_pipe(p, 0) == NGX_ABORT) {
+++             ngx_http_upstream_finalize_request(r, u, NGX_ERROR);
+++             return;
+++@@ -6812,3 +6863,32 @@ ngx_http_upstream_init_main_conf(ngx_conf_t *cf, void *conf)
+++ 
+++     return NGX_CONF_OK;
+++ }
++++
++++
++++static void
++++ngx_http_upstream_connect_handler(ngx_event_t *ev)
++++{
++++    ngx_connection_t      *c;
++++    ngx_http_request_t    *r;
++++    ngx_http_upstream_t   *u;
++++
++++    c = ev->data;
++++    r = c->data;
++++    u = r->upstream;
++++
++++    if (ev->timedout) {
++++        ngx_log_error(NGX_LOG_ERR, c->log, NGX_ETIMEDOUT, "upstream timed out");
++++        ngx_http_upstream_finalize_request(r, u, NGX_HTTP_GATEWAY_TIME_OUT);
++++        return;
++++    }
++++
++++    ngx_del_timer(c->write);
++++
++++    if (ngx_http_upstream_test_connect(c) != NGX_OK) {
++++        ngx_http_upstream_next(r, u, NGX_HTTP_UPSTREAM_FT_ERROR);
++++        return;
++++    }
++++
++++    ngx_http_upstream_send_request(r, u, 1);
++++}
++++
 +diff --git a/src/http/ngx_http_request.c b/src/http/ngx_http_request.c
 +index bd2be5ea..d06bc47f 100644
 +--- a/src/http/ngx_http_request.c
@@ -23,7 +164,7 @@ index 00000000..03756bfd
 +         ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
 +                       "client sent TRACE method");
 +diff --git a/src/http/ngx_http_upstream.c b/src/http/ngx_http_upstream.c
-+index f5db6533..65445e6a 100644
++index f5db6533..3bed644f 100644
 +--- a/src/http/ngx_http_upstream.c
 ++++ b/src/http/ngx_http_upstream.c
 +@@ -1,4 +1,3 @@
@@ -40,7 +181,16 @@ index 00000000..03756bfd
 + static ngx_int_t ngx_http_upstream_reinit(ngx_http_request_t *r,
 +     ngx_http_upstream_t *u);
 + static void ngx_http_upstream_send_request(ngx_http_request_t *r,
-+@@ -1676,6 +1677,57 @@ ngx_http_upstream_connect(ngx_http_request_t *r, ngx_http_upstream_t *u)
++@@ -1009,7 +1010,7 @@ ngx_http_upstream_cache_get(ngx_http_request_t *r, ngx_http_upstream_t *u,
++ {
++     ngx_str_t               *name, val;
++     ngx_uint_t               i;
++-    ngx_http_file_cache_t  **caches;
+++    ngx_http_file_cache_t **caches;
++ 
++     if (u->conf->cache_zone) {
++         *cache = u->conf->cache_zone->data;
++@@ -1676,6 +1677,59 @@ ngx_http_upstream_connect(ngx_http_request_t *r, ngx_http_upstream_t *u)
 + #endif
 + 
 +     ngx_http_upstream_send_request(r, u, 1);
@@ -58,6 +208,7 @@ index 00000000..03756bfd
 ++    ngx_int_t                  rc;
 ++    ngx_connection_t          *c;
 ++    ngx_http_core_loc_conf_t  *clcf;
+++    ngx_http_upstream_conf_t  *ucf;
 ++
 ++    r->connection->log->action = "connecting to upstream";
 ++
@@ -88,7 +239,8 @@ index 00000000..03756bfd
 ++    }
 ++
 ++    if (rc == NGX_AGAIN) {
-++        ngx_add_timer(c->write, clcf->connect_timeout);
+++        ucf = u->conf;
+++        ngx_add_timer(c->write, ucf->connect_timeout);
 ++        c->write->handler = ngx_http_upstream_connect_handler;
 ++        return;
 ++    }
@@ -98,7 +250,7 @@ index 00000000..03756bfd
 + }
 + 
 + 
-+@@ -4107,7 +4159,6 @@ ngx_http_upstream_process_upstream(ngx_http_request_t *r,
++@@ -4107,7 +4161,6 @@ ngx_http_upstream_process_upstream(ngx_http_request_t *r,
 + 
 +             return;
 +         }
@@ -106,7 +258,7 @@ index 00000000..03756bfd
 +         if (ngx_event_pipe(p, 0) == NGX_ABORT) {
 +             ngx_http_upstream_finalize_request(r, u, NGX_ERROR);
 +             return;
-+@@ -6812,3 +6863,32 @@ ngx_http_upstream_init_main_conf(ngx_conf_t *cf, void *conf)
++@@ -6812,3 +6865,32 @@ ngx_http_upstream_init_main_conf(ngx_conf_t *cf, void *conf)
 + 
 +     return NGX_CONF_OK;
 + }
@@ -158,7 +310,7 @@ index bd2be5ea..d06bc47f 100644
          ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
                        "client sent TRACE method");
 diff --git a/src/http/ngx_http_upstream.c b/src/http/ngx_http_upstream.c
-index f5db6533..3bed644f 100644
+index f5db6533..3ffd0688 100644
 --- a/src/http/ngx_http_upstream.c
 +++ b/src/http/ngx_http_upstream.c
 @@ -1,4 +1,3 @@
@@ -184,7 +336,7 @@ index f5db6533..3bed644f 100644
  
      if (u->conf->cache_zone) {
          *cache = u->conf->cache_zone->data;
-@@ -1676,6 +1677,59 @@ ngx_http_upstream_connect(ngx_http_request_t *r, ngx_http_upstream_t *u)
+@@ -1676,6 +1677,63 @@ ngx_http_upstream_connect(ngx_http_request_t *r, ngx_http_upstream_t *u)
  #endif
  
      ngx_http_upstream_send_request(r, u, 1);
@@ -201,7 +353,6 @@ index f5db6533..3bed644f 100644
 +{
 +    ngx_int_t                  rc;
 +    ngx_connection_t          *c;
-+    ngx_http_core_loc_conf_t  *clcf;
 +    ngx_http_upstream_conf_t  *ucf;
 +
 +    r->connection->log->action = "connecting to upstream";
@@ -233,18 +384,188 @@ index f5db6533..3bed644f 100644
 +    }
 +
 +    if (rc == NGX_AGAIN) {
++        c = r->connection;  // Initialize 'c' with the current connection
 +        ucf = u->conf;
 +        ngx_add_timer(c->write, ucf->connect_timeout);
 +        c->write->handler = ngx_http_upstream_connect_handler;
 +        return;
 +    }
 +
-+    // Directly proxy the TCP stream
-+    ngx_http_upstream_send_response(r, u);
++    // Wait for HTTP 200 response from upstream
++    u->read_event_handler = ngx_http_upstream_process_header;
++    u->write_event_handler = ngx_http_upstream_send_request_handler;
++
++    // Once the HTTP 200 response is received, transition to raw TCP
++    ngx_http_upstream_process_header(r, u);
  }
  
  
-@@ -4107,7 +4161,6 @@ ngx_http_upstream_process_upstream(ngx_http_request_t *r,
+@@ -2370,157 +2428,14 @@ ngx_http_upstream_read_request_handler(ngx_http_request_t *r)
+ static void
+ ngx_http_upstream_process_header(ngx_http_request_t *r, ngx_http_upstream_t *u)
+ {
+-    ssize_t            n;
+-    ngx_int_t          rc;
+-    ngx_connection_t  *c;
+-
+-    c = u->peer.connection;
+-
+-    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0,
+-                   "http upstream process header");
+-
+-    c->log->action = "reading response header from upstream";
+-
+-    if (c->read->timedout) {
+-        ngx_http_upstream_next(r, u, NGX_HTTP_UPSTREAM_FT_TIMEOUT);
+-        return;
+-    }
+-
+-    if (!u->request_sent && ngx_http_upstream_test_connect(c) != NGX_OK) {
+-        ngx_http_upstream_next(r, u, NGX_HTTP_UPSTREAM_FT_ERROR);
+-        return;
+-    }
+-
+-    if (u->buffer.start == NULL) {
+-        u->buffer.start = ngx_palloc(r->pool, u->conf->buffer_size);
+-        if (u->buffer.start == NULL) {
+-            ngx_http_upstream_finalize_request(r, u,
+-                                               NGX_HTTP_INTERNAL_SERVER_ERROR);
+-            return;
+-        }
+-
+-        u->buffer.pos = u->buffer.start;
+-        u->buffer.last = u->buffer.start;
+-        u->buffer.end = u->buffer.start + u->conf->buffer_size;
+-        u->buffer.temporary = 1;
+-
+-        u->buffer.tag = u->output.tag;
+-
+-        if (ngx_list_init(&u->headers_in.headers, r->pool, 8,
+-                          sizeof(ngx_table_elt_t))
+-            != NGX_OK)
+-        {
+-            ngx_http_upstream_finalize_request(r, u,
+-                                               NGX_HTTP_INTERNAL_SERVER_ERROR);
+-            return;
+-        }
+-
+-        if (ngx_list_init(&u->headers_in.trailers, r->pool, 2,
+-                          sizeof(ngx_table_elt_t))
+-            != NGX_OK)
+-        {
+-            ngx_http_upstream_finalize_request(r, u,
+-                                               NGX_HTTP_INTERNAL_SERVER_ERROR);
+-            return;
+-        }
+-
+-#if (NGX_HTTP_CACHE)
+-
+-        if (r->cache) {
+-            u->buffer.pos += r->cache->header_start;
+-            u->buffer.last = u->buffer.pos;
+-        }
+-#endif
+-    }
+-
+-    for ( ;; ) {
+-
+-        n = c->recv(c, u->buffer.last, u->buffer.end - u->buffer.last);
+-
+-        if (n == NGX_AGAIN) {
+-#if 0
+-            ngx_add_timer(rev, u->read_timeout);
+-#endif
+-
+-            if (ngx_handle_read_event(c->read, 0) != NGX_OK) {
+-                ngx_http_upstream_finalize_request(r, u,
+-                                               NGX_HTTP_INTERNAL_SERVER_ERROR);
+-                return;
+-            }
+-
+-            return;
+-        }
+-
+-        if (n == 0) {
+-            ngx_log_error(NGX_LOG_ERR, c->log, 0,
+-                          "upstream prematurely closed connection");
+-        }
+-
+-        if (n == NGX_ERROR || n == 0) {
+-            ngx_http_upstream_next(r, u, NGX_HTTP_UPSTREAM_FT_ERROR);
+-            return;
+-        }
+-
+-        u->state->bytes_received += n;
+-
+-        u->buffer.last += n;
+-
+-#if 0
+-        u->valid_header_in = 0;
+-
+-        u->peer.cached = 0;
+-#endif
+-
+-        rc = u->process_header(r);
+-
+-        if (rc == NGX_AGAIN) {
+-
+-            if (u->buffer.last == u->buffer.end) {
+-                ngx_log_error(NGX_LOG_ERR, c->log, 0,
+-                              "upstream sent too big header");
+-
+-                ngx_http_upstream_next(r, u,
+-                                       NGX_HTTP_UPSTREAM_FT_INVALID_HEADER);
+-                return;
+-            }
+-
+-            continue;
+-        }
+-
+-        break;
+-    }
+-
+-    if (rc == NGX_HTTP_UPSTREAM_INVALID_HEADER) {
+-        ngx_http_upstream_next(r, u, NGX_HTTP_UPSTREAM_FT_INVALID_HEADER);
+-        return;
+-    }
+-
+-    if (rc == NGX_ERROR) {
+-        ngx_http_upstream_finalize_request(r, u,
+-                                           NGX_HTTP_INTERNAL_SERVER_ERROR);
+-        return;
+-    }
+-
+-    /* rc == NGX_OK */
+-
+-    u->state->header_time = ngx_current_msec - u->start_time;
+-
+-    if (u->headers_in.status_n >= NGX_HTTP_SPECIAL_RESPONSE) {
+-
+-        if (ngx_http_upstream_test_next(r, u) == NGX_OK) {
+-            return;
+-        }
+-
+-        if (ngx_http_upstream_intercept_errors(r, u) == NGX_OK) {
+-            return;
+-        }
+-    }
+-
+-    if (ngx_http_upstream_process_headers(r, u) != NGX_OK) {
+-        return;
++    // Check if the upstream server has sent an HTTP 200 response
++    if (u->headers_in.status_n == NGX_HTTP_OK) {
++        // Transition to raw TCP tunneling
++        ngx_http_upstream_send_response(r, u);
++    } else {
++        // Handle other HTTP responses or errors
++        ngx_http_upstream_finalize_request(r, u, NGX_HTTP_BAD_GATEWAY);
+     }
+-
+-    ngx_http_upstream_send_response(r, u);
+ }
+ 
+ 
+@@ -4107,7 +4022,6 @@ ngx_http_upstream_process_upstream(ngx_http_request_t *r,
  
              return;
          }
@@ -252,7 +573,7 @@ index f5db6533..3bed644f 100644
          if (ngx_event_pipe(p, 0) == NGX_ABORT) {
              ngx_http_upstream_finalize_request(r, u, NGX_ERROR);
              return;
-@@ -6812,3 +6865,32 @@ ngx_http_upstream_init_main_conf(ngx_conf_t *cf, void *conf)
+@@ -6812,3 +6726,32 @@ ngx_http_upstream_init_main_conf(ngx_conf_t *cf, void *conf)
  
      return NGX_CONF_OK;
  }
