@@ -17,7 +17,7 @@ index bd2be5ea..d06bc47f 100644
          ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
                        "client sent TRACE method");
 diff --git a/src/http/ngx_http_upstream.c b/src/http/ngx_http_upstream.c
-index f5db6533..6f9850c5 100644
+index f5db6533..f540a0e5 100644
 --- a/src/http/ngx_http_upstream.c
 +++ b/src/http/ngx_http_upstream.c
 @@ -1,4 +1,3 @@
@@ -33,13 +33,13 @@ index f5db6533..6f9850c5 100644
  static ngx_int_t ngx_http_upstream_reinit(ngx_http_request_t *r,
      ngx_http_upstream_t *u);
  static void ngx_http_upstream_send_request(ngx_http_request_t *r,
-@@ -1676,6 +1676,58 @@ ngx_http_upstream_connect(ngx_http_request_t *r, ngx_http_upstream_t *u)
+@@ -1676,6 +1676,57 @@ ngx_http_upstream_connect(ngx_http_request_t *r, ngx_http_upstream_t *u)
  #endif
  
      ngx_http_upstream_send_request(r, u, 1);
 +
 +    if (r->method == NGX_HTTP_CONNECT) {
-+        // Bypass HTTP processing and treat as raw TCP stream
++        // Transition to stream handling
 +        ngx_http_upstream_connect_raw(r, u);
 +        return;
 +    }
@@ -75,8 +75,6 @@ index f5db6533..6f9850c5 100644
 +
 +    rc = ngx_event_connect_peer(&u->peer);
 +
-+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "http upstream connect raw: %i", rc);
-+
 +    if (rc == NGX_ERROR || rc == NGX_DECLINED) {
 +        ngx_http_upstream_finalize_request(r, u, NGX_HTTP_BAD_GATEWAY);
 +        return;
@@ -88,11 +86,12 @@ index f5db6533..6f9850c5 100644
 +        return;
 +    }
 +
++    // Directly proxy the TCP stream
 +    ngx_http_upstream_send_response(r, u);
  }
  
  
-@@ -4107,7 +4159,6 @@ ngx_http_upstream_process_upstream(ngx_http_request_t *r,
+@@ -4107,7 +4158,6 @@ ngx_http_upstream_process_upstream(ngx_http_request_t *r,
  
              return;
          }
@@ -100,8 +99,36 @@ index f5db6533..6f9850c5 100644
          if (ngx_event_pipe(p, 0) == NGX_ABORT) {
              ngx_http_upstream_finalize_request(r, u, NGX_ERROR);
              return;
-@@ -6812,3 +6863,4 @@ ngx_http_upstream_init_main_conf(ngx_conf_t *cf, void *conf)
+@@ -6812,3 +6862,32 @@ ngx_http_upstream_init_main_conf(ngx_conf_t *cf, void *conf)
  
      return NGX_CONF_OK;
  }
++
++
++static void
++ngx_http_upstream_connect_handler(ngx_event_t *ev)
++{
++    ngx_connection_t      *c;
++    ngx_http_request_t    *r;
++    ngx_http_upstream_t   *u;
++
++    c = ev->data;
++    r = c->data;
++    u = r->upstream;
++
++    if (ev->timedout) {
++        ngx_log_error(NGX_LOG_ERR, c->log, NGX_ETIMEDOUT, "upstream timed out");
++        ngx_http_upstream_finalize_request(r, u, NGX_HTTP_GATEWAY_TIME_OUT);
++        return;
++    }
++
++    ngx_del_timer(c->write);
++
++    if (ngx_http_upstream_test_connect(c) != NGX_OK) {
++        ngx_http_upstream_next(r, u, NGX_HTTP_UPSTREAM_FT_ERROR);
++        return;
++    }
++
++    ngx_http_upstream_send_request(r, u, 1);
++}
 +
