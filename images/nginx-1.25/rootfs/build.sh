@@ -426,9 +426,6 @@ Include /etc/nginx/owasp-modsecurity-crs/rules/RESPONSE-999-EXCLUSION-RULES-AFTE
 # build nginx
 cd "$BUILD_PATH/nginx-$NGINX_VERSION"
 
-# Clone the ngx_http_proxy_connect_module repository
-git clone https://github.com/chobits/ngx_http_proxy_connect_module.git $BUILD_PATH/ngx_http_proxy_connect_module
-
 # apply nginx patches
 for PATCH in `ls /patches`;do
   echo "Patch: $PATCH"
@@ -438,9 +435,6 @@ for PATCH in `ls /patches`;do
     patch -p1 < /patches/$PATCH
   fi
 done
-
-# Apply patch for ngx_http_proxy_connect_module
-patch -p1 < $BUILD_PATH/ngx_http_proxy_connect_module/patch/proxy_connect_rewrite_102101.patch
 
 WITH_FLAGS="--with-debug \
   --with-compat \
@@ -495,8 +489,7 @@ WITH_MODULES=" \
   --add-dynamic-module=$BUILD_PATH/nginx-http-auth-digest \
   --add-dynamic-module=$BUILD_PATH/ModSecurity-nginx \
   --add-dynamic-module=$BUILD_PATH/ngx_http_geoip2_module \
-  --add-dynamic-module=$BUILD_PATH/ngx_brotli \
-  --add-dynamic-module=$BUILD_PATH/ngx_http_proxy_connect_module"
+  --add-dynamic-module=$BUILD_PATH/ngx_brotli"
 
 ./configure \
   --prefix=/usr/local/nginx \
